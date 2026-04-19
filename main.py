@@ -166,12 +166,175 @@ def task3_visualization(df):
 # ==========================================
 # 主程序入口
 # ==========================================
+# ==========================================
+# 任务 4：高峰小时系数计算 (PHF)
+# ==========================================
+def task4_phf_calculation(df):
+    print("\n=== 任务4：高峰小时系数计算 ===")
+    # 仅统计上车记录
+    boarding_df = df[df['刷卡类型'] == 0].copy()
+
+    # --- 1. 高峰小时自动识别 ---
+    hour_counts = boarding_df['hour'].value_counts()
+    peak_hour = hour_counts.idxmax()  # 找出刷卡量最大的小时
+    peak_hour_vol = hour_counts.max()  # 获取该小时的总刷卡量
+
+    peak_start = f"{peak_hour:02d}:00"
+    peak_end = f"{peak_hour + 1:02d}:00"
+    print(f"高峰小时：{peak_start} ~ {peak_end}，刷卡量：{peak_hour_vol} 次")
+
+    # --- 2. 分钟粒度聚合与 PHF 计算 (含核心手写注释) ---
+
+    # 提取高峰小时内的所有记录
+    peak_df = boarding_df[boarding_df['hour'] == peak_hour].copy()
+
+    # 【必须将时间列设为索引，才能使用 pandas 的 resample 时间重采样功能】
+    peak_df.set_index('交易时间', inplace=True)
+
+    # ---------------------------------------------------------
+    # 以下为需要在 README 报告中提交的核心代码及逐行中文注释
+    # ---------------------------------------------------------
+    # 使用 resample 按 '5min' (5分钟) 为时间窗口进行重采样，并用 size() 统计每个窗口内的刷卡记录数
+    resampled_5min = peak_df.resample('5min').size()
+    # 找出聚合后客流量最大的那个 5 分钟区间的刷卡量
+    max_5min_vol = resampled_5min.max()
+    # 找出该最大刷卡量对应的起始时间点
+    max_5min_time = resampled_5min.idxmax()
+
+    # 使用 resample 按 '15min' (15分钟) 为时间窗口进行重采样并统计记录数
+    resampled_15min = peak_df.resample('15min').size()
+    # 找出客流量最大的 15 分钟区间的刷卡量
+    max_15min_vol = resampled_15min.max()
+    # 找出该最大刷卡量对应的起始时间点
+    max_15min_time = resampled_15min.idxmax()
+
+    # 根据公式计算 PHF5：高峰小时总刷卡量 ÷ (12 × 最大5分钟刷卡量)
+    phf5 = peak_hour_vol / (12 * max_5min_vol)
+    # 根据公式计算 PHF15：高峰小时总刷卡量 ÷ (4 × 最大15分钟刷卡量)
+    phf15 = peak_hour_vol / (4 * max_15min_vol)
+    # ---------------------------------------------------------
+
+    # 格式化输出时间段字符串 (如 08:15~08:20)
+    time_str_5m = f"{max_5min_time.strftime('%H:%M')}~{(max_5min_time + pd.Timedelta(minutes=5)).strftime('%H:%M')}"
+    time_str_15m = f"{max_15min_time.strftime('%H:%M')}~{(max_15min_time + pd.Timedelta(minutes=15)).strftime('%H:%M')}"
+
+    print(f"最大5分钟刷卡量（{time_str_5m}）：{max_5min_vol} 次")
+    print(f"PHF5  = {peak_hour_vol} / (12 × {max_5min_vol}) = {phf5:.4f}")
+    print(f"最大15分钟刷卡量（{time_str_15m}）：{max_15min_vol} 次")
+    print(f"PHF15 = {peak_hour_vol} / ( 4 × {max_15min_vol}) = {phf15:.4f}")
+
+
+# ==========================================
+# 任务 5：线路驾驶员信息批量导出
+# ==========================================
+def task5_export_drivers(df):
+    print("\n=== 任务5：线路驾驶员信息批量导出 ===")
+
+    folder_name = "线路驾驶员信息"
+    # 如果文件夹不存在，则在根目录下创建
+    if not os.path.exists(folder_name):
+        os.makedirs(folder_name)
+
+    # 强转线路号为数字，过滤出 1101 至 1120 的记录
+    df['线路号_num'] = pd.to_numeric(df['线路号'], errors='coerce')
+    target_routes = list(range(1101, 1121))
+    sub_df = df[df['线路号_num'].isin(target_routes)]
+
+    generated_files = []
+
+    for route in target_routes:
+        # 筛选单条线路
+        route_df = sub_df[sub_df['线路号_num'] == route]
+        # 提取并去重
+        driver_mapping = route_df[['车辆编号', '驾驶员编号']].drop_duplicates()
+
+        # 写入 txt
+        file_path = os.path.join(folder_name, f"{route}.txt")
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(f"线路号: {route}\n")
+            f.write("车辆编号\t驾驶员编号\n")
+            for _, row in driver_mapping.iterrows():
+                f.write(f"{row['车辆编号']}\t{row['驾驶员编号']}\n")
+
+        generated_files.append(file_path)
+
+    print(f"成功生成了 {len(generated_files)} 个 txt 文件。路径示例：")
+    for p in generated_files[:3]:
+        print(" ->", p)
+    print(" -> ...")
+
+
+# ==========================================
+# 任务 6：服务绩效排名与热力图
+# ==========================================
+def task6_performance_heatmap(df):
+    print("\n=== 任务6：服务绩效排名与热力图 ===")
+
+    # 仅统计有效上车刷卡记录作为乘客人次
+    boarding_df = df[df['刷卡类型'] == 0]
+
+    # 分别统计各维度的 Top 10 (value_counts 默认降序排列)
+    top10_drivers = boarding_df['驾驶员编号'].value_counts().head(10)
+    top10_routes = boarding_df['线路号'].value_counts().head(10)
+    top10_stops = boarding_df['上车站点'].value_counts().head(10)
+    top10_vehicles = boarding_df['车辆编号'].value_counts().head(10)
+
+    print("Top 10 司机:", top10_drivers.index.tolist())
+    print("Top 10 线路:", top10_routes.index.tolist())
+    print("Top 10 站点:", top10_stops.index.tolist())
+    print("Top 10 车辆:", top10_vehicles.index.tolist())
+
+    # 构造 4 x 10 的 DataFrame 用于画热力图
+    heatmap_data = pd.DataFrame([
+        top10_drivers.values,
+        top10_routes.values,
+        top10_stops.values,
+        top10_vehicles.values
+    ], index=['司机', '线路', '上车站点', '车辆'], columns=[f"Top{i}" for i in range(1, 11)])
+
+    plt.figure(figsize=(12, 4))
+
+    # 绘制热力图 (annot=True 标注数值，fmt="d" 确保是整数，cmap="YlOrRd" 黄橙红渐变)
+    sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlOrRd")
+
+    plt.title('公交服务绩效排名热力图 (按乘客人次)', fontsize=15)
+    plt.suptitle('反映最繁忙的司机、线路、站点及车辆Top10客流分布', fontsize=10, color='gray')
+    plt.xlabel('排名标签', fontsize=12)
+    plt.ylabel('服务维度', fontsize=12)
+
+    # x 轴标签旋转 0 度
+    plt.xticks(rotation=0)
+
+    # bbox_inches='tight' 保证边缘完整不被裁剪
+    plt.tight_layout()
+    plt.savefig('performance_heatmap.png', dpi=150, bbox_inches='tight')
+    print("图像已保存为 performance_heatmap.png")
+
+    # --- 结论说明 (>= 50字) ---
+    conclusion = """
+    【结论说明】
+    从上述服务绩效热力图可以清晰观察到客流在不同维度的极度不均衡分布规律：
+    1. 在“线路”和“上车站点”维度，Top 1 与 Top 2 的客流量呈现断层式领先（深红色），远超第3名及以后，这说明城市公交客流高度集中在极少数核心干线和关键枢纽站点。
+    2. 相比之下，“司机”和“车辆”的客流递减梯度相对平缓，说明公交公司内部的运力排班较为均衡，没有出现个别司机或车辆过度超负荷运转的极端情况。
+    """
+    print(conclusion)
+
+
+# ==========================================
+# 完整主程序入口
+# ==========================================
 if __name__ == "__main__":
     # 任务1
     df_clean = task1_preprocessing('ICData.csv')
-
     # 任务2
     task2_time_analysis(df_clean)
-
     # 任务3
     task3_visualization(df_clean)
+
+    # 任务4
+    task4_phf_calculation(df_clean)
+    # 任务5
+    task5_export_drivers(df_clean)
+    # 任务6
+    task6_performance_heatmap(df_clean)
+    print("\n🎉 全部作业代码运行完毕！")
